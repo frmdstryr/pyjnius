@@ -239,8 +239,8 @@ def autoclass(clsname):
         classDict)
     
 def dump_spec(clsname):
-    """ Makes a spec of a JavaClass can be stored and used later to statically define a JavaClass 
-         to avoid having to load everything via the JNI (which is slow).
+    """ Makes a spec of a JavaClass that can be stored and used passed to load_spec to statically define a JavaClass. 
+         Allows avoiding having to load everything via the JNI (which is slow) every time.
          
         @param clsname: dottect object name of java class
         @returns spec: a dictionary of the format:
@@ -359,7 +359,10 @@ def dump_spec(clsname):
     return spec
 
 def load_spec(spec):
-    """ Inverse of dump_spec 
+    """ Loads a JavaClass from a spec. Returns the same output as  autoclass, 
+        but instead of using the JNI to build the class via reflection it loads the previously 
+        reflected values from the spec, allowing you to "cache" a JavaClass definition.
+         
         @param spec: spec dictonary from dump_spec
         @returns JavaClass instance that should equal the autoclass output
     """
