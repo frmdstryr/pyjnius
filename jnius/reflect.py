@@ -2,7 +2,7 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-__all__ = ('autoclass', 'ensureclass')
+__all__ = ('autoclass', 'ensureclass','makespec')
 from six import with_metaclass
 
 from .jnius import (
@@ -237,3 +237,171 @@ def autoclass(clsname):
         clsname,  # .replace('.', '_'),
         (JavaClass, ),
         classDict)
+    
+def dump_spec(clsname):
+    """ Makes a spec of a JavaClass can be stored and used later to statically define a JavaClass 
+         to avoid having to load everything via the JNI (which is slow).
+         
+        @param clsname: dottect object name of java class
+        @returns spec: a dictionary of the format:
+            {
+                'class':clsname,
+                'constructors': {
+                    'sig1': {constructor spec..},
+                    # etc.. 
+                },
+                'interfaces': [
+                    # name
+                ],
+                'fields':{
+                    'name': {field spec...},
+                    # etc...
+                },
+                'methods':{
+                    'name': {
+                            'sig1': {method spec..},
+                            'sig2': {method spec..},
+                            # etc ... 
+                        },
+                    'name2': {},
+                    # etc ...
+                },
+                'extends': 'java.lang.Object', # Superclass
+            }
+    """
+
+    c = find_javaclass(clsname)
+    if c is None:
+        raise Exception('Java class {0} not found'.format(c))
+        return None
+    
+    spec = {
+        'class':clsname,
+        'constructors': {},
+        'interfaces': [],
+        'fields':{},
+        'methods':{},
+        'extends': 'java.lang.Object', # Superclass
+    }
+
+    #: Get spec for each constructor
+    for constructor in c.getConstructors():
+        sig = '({0})V'.format(
+            ''.join([get_signature(x) for x in constructor.getParameterTypes()]))
+        spec['constructors'][sig] = {
+            'vargs':  constructor.isVarArgs(),
+            'signature': sig,
+        }
+    
+    #: Get spec for each method
+    methods = c.getMethods()
+    methods_name = [x.getName() for x in methods]
+    for index, method in enumerate(methods):
+        name = methods_name[index]
+        if name in spec['methods']:
+            continue
+        count = methods_name.count(name)
+        
+        spec['methods'][name] = {}
+        for index, subname in enumerate(methods_name):
+            if subname != name:
+                continue
+            method = methods[index]
+            sig = '({0}){1}'.format(
+                ''.join([get_signature(x) for x in method.getParameterTypes()]),
+                get_signature(method.getReturnType()))
+
+            mods = method.getModifiers()
+            spec['methods'][name][sig] = {
+                'vargs': method.isVarArgs(),
+                'public': Modifier.isPublic(mods),
+                'protected':Modifier.isProtected(mods),
+                'private': Modifier.isPrivate(mods),
+                'static': Modifier.isStatic(mods),
+                'final': Modifier.isFinal(mods),
+                'synchronized': Modifier.isSynchronized(mods),
+                'volatile': Modifier.isVolatile(mods),
+                'transient': Modifier.isTransient(mods),
+                'native': Modifier.isNative(mods),
+                'abstract': Modifier.isAbstract(mods),
+                'strict': Modifier.isStrict(mods),
+                'signature': sig,
+                'name': name,
+            }
+
+    #: Get spec for each field
+    for field in c.getFields():
+        mods = field.getModifiers()
+        
+        spec['fields'][field.getName()] = {
+            'public': Modifier.isPublic(mods),
+            'protected':Modifier.isProtected(mods),
+            'private': Modifier.isPrivate(mods),
+            'static': Modifier.isStatic(mods),
+            'final': Modifier.isFinal(mods),
+            'synchronized': Modifier.isSynchronized(mods),
+            'volatile': Modifier.isVolatile(mods),
+            'transient': Modifier.isTransient(mods),
+            'native': Modifier.isNative(mods),
+            'abstract': Modifier.isAbstract(mods),
+            'strict': Modifier.isStrict(mods),
+            'name': field.getName(),
+            'signature': get_signature(field.getType()),
+        }
+        
+    #: Get spec reference for each interface
+    for iclass in c.getInterfaces():
+        spec['interfaces'].append(iclass.getName())
+
+    #: Get spec reference for the superclass interface
+    #spec['extends'] = c.getSuperclass().getName()
+    
+    return spec
+
+def load_spec(spec):
+    """ Inverse of dump_spec 
+        @param spec: spec dictonary from dump_spec
+        @returns JavaClass instance that should equal the autoclass output
+    """
+    cls = MetaJavaClass.get_javaclass(spec['class'].replace('.', '/'))
+    if cls:
+        return cls
+    
+    #: Add type and constructors
+    attributes = {
+        '__javaclass__': spec['class'].replace('.','/'),
+        '__javaconstructor__':   [(c['signature'],c['vargs']) 
+                                                    for c in spec['constructors'].values()],
+    }
+    
+    #: Add support for any interfaces
+    if 'java.util.List' in spec['interfaces']:
+        attributes.update({
+            '__getitem__': lambda self, index: self.get(index),
+            '__len__': lambda self: self.size()
+        })
+        
+    #: Add methods
+    attributes.update({
+            name: JavaMultipleMethod(
+                                [(ms['signature'], ms['static'], ms['vargs']) for ms in m.values()]
+                            )  if len(m)>1 else (
+                                JavaStaticMethod if m.values()[0]['static'] else JavaMethod
+                            )(m.values()[0]['signature'])
+        for name,m in spec['methods'].items()
+    })
+    
+    #: Add fields
+    attributes.update({
+        f['name']:(JavaStaticField if f['static'] else JavaField)(f['signature'])
+        for f in spec['fields'].values()
+    })
+    
+    return MetaJavaClass.__new__(
+        MetaJavaClass,
+        spec['class'], 
+        (JavaClass, ),
+        attributes
+    )
+
+    
