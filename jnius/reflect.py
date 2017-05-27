@@ -2,10 +2,14 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-__all__ = ('autoclass', 'ensureclass','makespec')
+__all__ = ('autoclass', 'ensureclass','dump_spec','load_spec')
+
+import json
+from os.path import dirname, join, exists
+    
 from six import with_metaclass
 
-from .jnius import (
+from jnius.jnius import (
     JavaClass, MetaJavaClass, JavaMethod, JavaStaticMethod,
     JavaField, JavaStaticField, JavaMultipleMethod, find_javaclass
 )
@@ -146,11 +150,15 @@ def bean_getter(s):
     return (s.startswith('get') and len(s) > 3 and s[3].isupper()) or (s.startswith('is') and len(s) > 2 and s[2].isupper())
 
 
-def autoclass(clsname):
+def autoclass(clsname, cached=False):
     jniname = clsname.replace('.', '/')
     cls = MetaJavaClass.get_javaclass(jniname)
     if cls:
         return cls
+    
+    if cached:
+        #: Try to load from cache
+        return cached_autoclass(clsname,mem=False) # Ignore mem, we just tried
 
     classDict = {}
 
@@ -406,5 +414,52 @@ def load_spec(spec):
         (JavaClass, ),
         attributes
     )
+
+def cached_autoclass(clsname,mem=True,flush=False):
+    """ Attempt to load the class from cache. If it doesn't exist,  
+        create the cache.
+        
+        Cache creates a json file called 'reflect.javac' in this folder.
+        
+        @param: clsname: JavaClass to load
+        @param: mem: Check in memory for class first
+        @param: flush: Ignore cache file if one exists
+    """
+    #: Try memory first
+    if mem:
+        cls = MetaJavaClass.get_javaclass(clsname.replace('.', '/'))
+        if cls:
+            return cls
+        
+    #: Try to load from file
+    specs = {}
+    javac = join(dirname(__file__),'reflect.javac')
+    if exists(javac) and not flush:
+        with open(javac,'r') as f:
+            try:
+                specs = json.load(f)
+            except:
+                pass #: Warn of failure at least? 
+    
+    #: If spec cache doesn't exist, create it
+    if clsname not in specs:
+        #: Create spec
+        specs[clsname] = dump_spec(clsname)
+        
+        #: Save to  javac
+        try:
+            with open(javac,'w') as f:
+                json.dump(specs,f,indent=2)
+        except:
+            pass #: Warn of failure at least?     
+        
+    #: Load from spec
+    return load_spec(specs[clsname])
+    
+    
+    
+    
+    
+    
 
     
