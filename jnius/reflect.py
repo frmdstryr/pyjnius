@@ -2,9 +2,8 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-__all__ = ('autoclass', 'ensureclass','dump_spec','load_spec')
+__all__ = ('autoclass', 'ensureclass','dump_spec','load_spec','build_cache')
 
-import json
 from os.path import dirname, join, exists
     
 from six import with_metaclass
@@ -150,7 +149,7 @@ def bean_getter(s):
     return (s.startswith('get') and len(s) > 3 and s[3].isupper()) or (s.startswith('is') and len(s) > 2 and s[2].isupper())
 
 
-def autoclass(clsname, cached=False):
+def autoclass(clsname, cached=True):
     jniname = clsname.replace('.', '/')
     cls = MetaJavaClass.get_javaclass(jniname)
     if cls:
@@ -289,7 +288,7 @@ def dump_spec(clsname):
         'interfaces': [],
         'fields':{},
         'methods':{},
-        'extends': 'java.lang.Object', # Superclass
+        #'extends': 'java.lang.Object', # Superclass
     }
 
     #: Get spec for each constructor
@@ -298,7 +297,7 @@ def dump_spec(clsname):
             ''.join([get_signature(x) for x in constructor.getParameterTypes()]))
         spec['constructors'][sig] = {
             'vargs':  constructor.isVarArgs(),
-            'signature': sig,
+            'sig': sig,
         }
     
     #: Get spec for each method
@@ -322,18 +321,18 @@ def dump_spec(clsname):
             mods = method.getModifiers()
             spec['methods'][name][sig] = {
                 'vargs': method.isVarArgs(),
-                'public': Modifier.isPublic(mods),
-                'protected':Modifier.isProtected(mods),
-                'private': Modifier.isPrivate(mods),
+                #'public': Modifier.isPublic(mods),
+                #'protected':Modifier.isProtected(mods),
+                #'private': Modifier.isPrivate(mods),
                 'static': Modifier.isStatic(mods),
-                'final': Modifier.isFinal(mods),
-                'synchronized': Modifier.isSynchronized(mods),
-                'volatile': Modifier.isVolatile(mods),
-                'transient': Modifier.isTransient(mods),
-                'native': Modifier.isNative(mods),
-                'abstract': Modifier.isAbstract(mods),
-                'strict': Modifier.isStrict(mods),
-                'signature': sig,
+                #'final': Modifier.isFinal(mods),
+                #'synchronized': Modifier.isSynchronized(mods),
+                #'volatile': Modifier.isVolatile(mods),
+                #'transient': Modifier.isTransient(mods),
+                #'native': Modifier.isNative(mods),
+                #'abstract': Modifier.isAbstract(mods),
+                #'strict': Modifier.isStrict(mods),
+                'sig': sig,
                 'name': name,
             }
 
@@ -342,19 +341,19 @@ def dump_spec(clsname):
         mods = field.getModifiers()
         
         spec['fields'][field.getName()] = {
-            'public': Modifier.isPublic(mods),
-            'protected':Modifier.isProtected(mods),
-            'private': Modifier.isPrivate(mods),
+            #'public': Modifier.isPublic(mods),
+            #'protected':Modifier.isProtected(mods),
+            #'private': Modifier.isPrivate(mods),
             'static': Modifier.isStatic(mods),
-            'final': Modifier.isFinal(mods),
-            'synchronized': Modifier.isSynchronized(mods),
-            'volatile': Modifier.isVolatile(mods),
-            'transient': Modifier.isTransient(mods),
-            'native': Modifier.isNative(mods),
-            'abstract': Modifier.isAbstract(mods),
-            'strict': Modifier.isStrict(mods),
+            #'final': Modifier.isFinal(mods),
+            #'synchronized': Modifier.isSynchronized(mods),
+            #'volatile': Modifier.isVolatile(mods),
+            #'transient': Modifier.isTransient(mods),
+            #'native': Modifier.isNative(mods),
+            #'abstract': Modifier.isAbstract(mods),
+            #'strict': Modifier.isStrict(mods),
             'name': field.getName(),
-            'signature': get_signature(field.getType()),
+            'sig': get_signature(field.getType()),
         }
         
     #: Get spec reference for each interface
@@ -381,7 +380,7 @@ def load_spec(spec):
     #: Add type and constructors
     attributes = {
         '__javaclass__': spec['class'].replace('.','/'),
-        '__javaconstructor__':   [(c['signature'],c['vargs']) 
+        '__javaconstructor__':   [(c['sig'],c['vargs']) 
                                                     for c in spec['constructors'].values()],
     }
     
@@ -395,16 +394,16 @@ def load_spec(spec):
     #: Add methods
     attributes.update({
             name: JavaMultipleMethod(
-                                [(ms['signature'], ms['static'], ms['vargs']) for ms in m.values()]
+                                [(ms['sig'], ms['static'], ms['vargs']) for ms in m.values()]
                             )  if len(m)>1 else (
                                 JavaStaticMethod if m.values()[0]['static'] else JavaMethod
-                            )(m.values()[0]['signature'])
+                            )(m.values()[0]['sig'])
         for name,m in spec['methods'].items()
     })
     
     #: Add fields
     attributes.update({
-        f['name']:(JavaStaticField if f['static'] else JavaField)(f['signature'])
+        f['name']:(JavaStaticField if f['static'] else JavaField)(f['sig'])
         for f in spec['fields'].values()
     })
     
@@ -415,7 +414,10 @@ def load_spec(spec):
         attributes
     )
 
-def cached_autoclass(clsname,mem=True,flush=False):
+_CACHE_FILE = join(dirname(__file__),'reflect.javac')
+_SPEC_CACHE = {}
+
+def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False):
     """ Attempt to load the class from cache. If it doesn't exist,  
         create the cache.
         
@@ -424,20 +426,28 @@ def cached_autoclass(clsname,mem=True,flush=False):
         @param: clsname: JavaClass to load
         @param: mem: Check in memory for class first
         @param: flush: Ignore cache file if one exists
+        @param: output: Cache file type to use (pickle or json)
+        @param: save: Update/create the cache file if necessary
     """
     #: Try memory first
     if mem:
         cls = MetaJavaClass.get_javaclass(clsname.replace('.', '/'))
         if cls:
             return cls
+    
+    if output=='json':
+        import json as pickle
+    else:
+        import cPickle as pickle
         
     #: Try to load from file
-    specs = {}
-    javac = join(dirname(__file__),'reflect.javac')
-    if exists(javac) and not flush:
-        with open(javac,'r') as f:
+    specs = {} if flush else _SPEC_CACHE
+    
+    if not flush and not specs and exists(_CACHE_FILE):
+        with open(_CACHE_FILE,'r') as f:
             try:
-                specs = json.load(f)
+                specs = pickle.load(f)
+                _SPEC_CACHE.update(specs)
             except:
                 pass #: Warn of failure at least? 
     
@@ -447,16 +457,30 @@ def cached_autoclass(clsname,mem=True,flush=False):
         specs[clsname] = dump_spec(clsname)
         
         #: Save to  javac
-        try:
-            with open(javac,'w') as f:
-                json.dump(specs,f,indent=2)
-        except:
-            pass #: Warn of failure at least?     
+        if save:
+            try:
+                with open(_CACHE_FILE,'w') as f:
+                    pickle.dump(specs, f)
+            except:
+                pass #: Warn of failure at least?
         
     #: Load from spec
     return load_spec(specs[clsname])
+
+def build_cache(clsnames, output='pickle'):
+    """ Generates a javac file containing all the JavaClass names given.
     
+    """
+    if output=='json':
+        import json as pickle
+    else:
+        import cPickle as pickle
     
+    specs = {n:dump_spec(n) for n in clsnames}
+    
+    #: Save 
+    with open(_CACHE_FILE,'w') as f:
+        pickle.dump(specs,f)
     
     
     
