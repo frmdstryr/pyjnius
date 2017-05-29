@@ -437,8 +437,10 @@ def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False)
     
     if output=='json':
         import json as pickle
+        pargs = {}
     else:
         import cPickle as pickle
+        pargs = {"protocol":pickle.HIGHEST_PROTOCOL}
         
     #: Try to load from file
     specs = {} if flush else _SPEC_CACHE
@@ -460,7 +462,7 @@ def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False)
         if save:
             try:
                 with open(_CACHE_FILE,'w') as f:
-                    pickle.dump(specs, f)
+                    pickle.dump(specs, f,**pargs)
             except:
                 pass #: Warn of failure at least?
         
@@ -473,17 +475,14 @@ def build_cache(clsnames, output='pickle'):
     """
     if output=='json':
         import json as pickle
+        pargs = {}
     else:
         import cPickle as pickle
+        pargs = {"protocol":pickle.HIGHEST_PROTOCOL}
     
-    specs = {n:dump_spec(n) for n in clsnames}
+    specs = {n:dump_spec(n,mem=False,save=False,flush=True) for n in clsnames}
     
     #: Save 
     with open(_CACHE_FILE,'w') as f:
-        pickle.dump(specs,f)
-    
-    
-    
-    
-
+        pickle.dump(specs,f,**pargs)
     
