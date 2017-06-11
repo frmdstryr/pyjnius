@@ -244,7 +244,8 @@ def autoclass(clsname, cached=True):
         clsname,  # .replace('.', '_'),
         (JavaClass, ),
         classDict)
-    
+
+
 def dump_spec(clsname):
     """ Makes a spec of a JavaClass that can be stored and used passed to load_spec to statically define a JavaClass. 
          Allows avoiding having to load everything via the JNI (which is slow) every time.
@@ -283,11 +284,11 @@ def dump_spec(clsname):
         return None
     
     spec = {
-        'class':clsname,
+        'class': clsname,
         'constructors': {},
         'interfaces': [],
-        'fields':{},
-        'methods':{},
+        'fields': {},
+        'methods': {},
         #'extends': 'java.lang.Object', # Superclass
     }
 
@@ -365,6 +366,7 @@ def dump_spec(clsname):
     
     return spec
 
+
 def load_spec(spec):
     """ Loads a JavaClass from a spec. Returns the same output as  autoclass, 
         but instead of using the JNI to build the class via reflection it loads the previously 
@@ -380,33 +382,31 @@ def load_spec(spec):
     #: Add type and constructors
     attributes = {
         '__javaclass__': spec['class'].replace('.','/'),
-        '__javaconstructor__':   [(c['sig'],c['vargs']) 
+        '__javaconstructor__':   [(c['sig'], c['vargs'])
                                                     for c in spec['constructors'].values()],
     }
     
     #: Add support for any interfaces
     if 'java.util.List' in spec['interfaces']:
-        attributes.update({
-            '__getitem__': lambda self, index: self.get(index),
-            '__len__': lambda self: self.size()
-        })
-        
+        #: Update is slow
+        attributes['__getitem__'] = lambda self, index: self.get(index)
+        attributes['__len__'] = lambda self: self.size()
+
     #: Add methods
-    attributes.update({
-            name: JavaMultipleMethod(
-                                [(ms['sig'], ms['static'], ms['vargs']) for ms in m.values()]
-                            )  if len(m)>1 else (
-                                JavaStaticMethod if m.values()[0]['static'] else JavaMethod
-                            )(m.values()[0]['sig'])
-        for name,m in spec['methods'].items()
-    })
-    
+    for name, m in spec['methods'].iteritems():
+        if len(m) > 1:
+            method = JavaMultipleMethod(
+                [(ms['sig'], ms['static'], ms['vargs']) for ms in m.itervalues()]
+            )
+        else:
+            ms = m.values()[0]
+            method = (JavaStaticMethod if ms['static'] else JavaMethod)(ms['sig'])
+        attributes[name] = method
+
     #: Add fields
-    attributes.update({
-        f['name']:(JavaStaticField if f['static'] else JavaField)(f['sig'])
-        for f in spec['fields'].values()
-    })
-    
+    for f in spec['fields'].itervalues():
+        attributes[f['name']] = (JavaStaticField if f['static'] else JavaField)(f['sig'])
+
     return MetaJavaClass.__new__(
         MetaJavaClass,
         spec['class'], 
@@ -468,6 +468,7 @@ def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False)
         
     #: Load from spec
     return load_spec(specs[clsname])
+
 
 def build_cache(clsnames, output='pickle'):
     """ Generates a javac file containing all the JavaClass names given.
