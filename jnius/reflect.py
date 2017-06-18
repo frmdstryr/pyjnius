@@ -246,36 +246,12 @@ def autoclass(clsname, cached=True):
         classDict)
 
 
-def dump_spec(clsname):
+def dump_spec(clsname, packed=True):
     """ Makes a spec of a JavaClass that can be stored and used passed to load_spec to statically define a JavaClass. 
          Allows avoiding having to load everything via the JNI (which is slow) every time.
          
         @param clsname: dottect object name of java class
-        @returns spec: a dictionary of the format:
-            {
-                'class':clsname,
-                'constructors': {
-                    'sig1': {constructor spec..},
-                    # etc.. 
-                },
-                'interfaces': [
-                    # name
-                ],
-                'fields':{
-                    'name': {field spec...},
-                    # etc...
-                },
-                'methods':{
-                    'name': {
-                            'sig1': {method spec..},
-                            'sig2': {method spec..},
-                            # etc ... 
-                        },
-                    'name2': {},
-                    # etc ...
-                },
-                'extends': 'java.lang.Object', # Superclass
-            }
+        @returns spec
     """
 
     c = find_javaclass(clsname)
@@ -363,9 +339,32 @@ def dump_spec(clsname):
 
     #: Get spec reference for the superclass interface
     #spec['extends'] = c.getSuperclass().getName()
-    
+    if packed:
+        return pack_spec(spec)
     return spec
 
+
+def pack_spec(spec):
+    """ Tuples load 4x faster than dictionaries so "pack" the dictonary
+        into a tuple of tuples.
+    """
+    methods = []
+    for name, specs in spec['methods'].iteritems():
+        sigs = [(s['sig'], s['static'], s['vargs']) for s in specs.values()]
+        methods.append((name, tuple(sigs)))
+
+    fields = []
+    for name, s in spec['fields'].iteritems():
+        fields.append((name, s['sig'], s['static']))
+
+    return (
+        spec['class'],
+        tuple([(c['sig'], c['vargs'])
+               for c in spec['constructors'].values()]),
+        tuple(spec['interfaces']),
+        tuple(methods),
+        tuple(fields),
+    )
 
 def load_spec(spec):
     """ Loads a JavaClass from a spec. Returns the same output as  autoclass, 
@@ -375,41 +374,41 @@ def load_spec(spec):
         @param spec: spec dictonary from dump_spec
         @returns JavaClass instance that should equal the autoclass output
     """
-    cls = MetaJavaClass.get_javaclass(spec['class'].replace('.', '/'))
+
+    javaclass, constructors, interfaces, methods, fields = spec
+
+    cls = MetaJavaClass.get_javaclass(javaclass.replace('.', '/'))
     if cls:
         return cls
     
     #: Add type and constructors
     attributes = {
-        '__javaclass__': spec['class'].replace('.','/'),
-        '__javaconstructor__':   [(c['sig'], c['vargs'])
-                                                    for c in spec['constructors'].values()],
+        '__javaclass__': javaclass.replace('.','/'),
+        '__javaconstructor__': constructors,
     }
     
     #: Add support for any interfaces
-    if 'java.util.List' in spec['interfaces']:
+    if 'java.util.List' in interfaces:
         #: Update is slow
         attributes['__getitem__'] = lambda self, index: self.get(index)
         attributes['__len__'] = lambda self: self.size()
 
     #: Add methods
-    for name, m in spec['methods'].iteritems():
+    for name, m in methods:
         if len(m) > 1:
-            method = JavaMultipleMethod(
-                [(ms['sig'], ms['static'], ms['vargs']) for ms in m.itervalues()]
-            )
+            method = JavaMultipleMethod(list(m))
         else:
-            ms = m.values()[0]
-            method = (JavaStaticMethod if ms['static'] else JavaMethod)(ms['sig'])
+            ms = m[0]
+            method = (JavaStaticMethod if ms[1] else JavaMethod)(ms[0])
         attributes[name] = method
 
     #: Add fields
-    for f in spec['fields'].itervalues():
-        attributes[f['name']] = (JavaStaticField if f['static'] else JavaField)(f['sig'])
+    for f in fields:
+        attributes[f[0]] = (JavaStaticField if f[2] else JavaField)(f[1])
 
     return MetaJavaClass.__new__(
         MetaJavaClass,
-        spec['class'], 
+        javaclass,
         (JavaClass, ),
         attributes
     )
@@ -417,7 +416,7 @@ def load_spec(spec):
 _CACHE_FILE = join(dirname(__file__),'reflect.javac')
 _SPEC_CACHE = {}
 
-def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False):
+def cached_autoclass(clsname, mem=True, save=True, output='msgpack', flush=False):
     """ Attempt to load the class from cache. If it doesn't exist,  
         create the cache.
         
@@ -430,26 +429,28 @@ def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False)
         @param: save: Update/create the cache file if necessary
     """
     #: Try memory first
+    global _SPEC_CACHE
     if mem:
         cls = MetaJavaClass.get_javaclass(clsname.replace('.', '/'))
         if cls:
             return cls
-    
+    pargs = {}
     if output=='json':
         import json as pickle
-        pargs = {}
+    elif output=='msgpack':
+        import msgpack as pickle
     else:
         import cPickle as pickle
-        pargs = {"protocol":pickle.HIGHEST_PROTOCOL}
+        pargs = {"protocol": pickle.HIGHEST_PROTOCOL}
         
     #: Try to load from file
     specs = {} if flush else _SPEC_CACHE
     
     if not flush and not specs and exists(_CACHE_FILE):
-        with open(_CACHE_FILE,'r') as f:
+        with open(_CACHE_FILE,'rb') as f:
             try:
                 specs = pickle.load(f)
-                _SPEC_CACHE.update(specs)
+                _SPEC_CACHE = specs
             except:
                 pass #: Warn of failure at least? 
     
@@ -461,8 +462,8 @@ def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False)
         #: Save to  javac
         if save:
             try:
-                with open(_CACHE_FILE,'w') as f:
-                    pickle.dump(specs, f,**pargs)
+                with open(_CACHE_FILE,'wb') as f:
+                    pickle.dump(specs, f, **pargs)
             except:
                 pass #: Warn of failure at least?
         
@@ -472,7 +473,7 @@ def cached_autoclass(clsname, mem=True, save=True, output='pickle', flush=False)
 
 def build_cache(clsnames, output='pickle'):
     """ Generates a javac file containing all the JavaClass names given.
-    
+
     """
     if output=='json':
         import json as pickle
@@ -480,10 +481,10 @@ def build_cache(clsnames, output='pickle'):
     else:
         import cPickle as pickle
         pargs = {"protocol":pickle.HIGHEST_PROTOCOL}
-    
+
     specs = {n:dump_spec(n,mem=False,save=False,flush=True) for n in clsnames}
-    
-    #: Save 
+
+    #: Save
     with open(_CACHE_FILE,'w') as f:
         pickle.dump(specs,f,**pargs)
-    
+
